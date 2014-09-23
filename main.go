@@ -3,11 +3,12 @@
 package main
 
 import (
-	"fmt"
+//	"fmt"
 	"flag"	
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 //	"sync"
 	"github.com/andlabs/ui"
@@ -58,40 +59,46 @@ func listAccounts() {
 	// Assemble table of accounts
 	accounts := make([]DisplayAccount, len(config.Accounts))
 
+	// Pull accounts from config file
 	for i, account := range config.Accounts {
-		accounts[i] = DisplayAccount{false, strings.Join([]string{account.Name, account.Server}, "@")}
+		acctName := strings.Join([]string{account.Name, account.Server}, "@")
+		accounts[i] = DisplayAccount{false, acctName}
 	}	
 
-	account_table := ui.NewTable(reflect.TypeOf(accounts[0]))
-	account_table.Lock()
-	e := account_table.Data().(*[]DisplayAccount)
+	// Populate table
+	accountTable := ui.NewTable(reflect.TypeOf(accounts[0]))
+	accountTable.Lock()
+	e := accountTable.Data().(*[]DisplayAccount)
 	*e = accounts
-	account_table.Unlock()
+	accountTable.Unlock()
 
 	// Assemble button stack
-	add_button := ui.NewButton("Add")
-	modify_button := ui.NewButton("Modify")
-	delete_button := ui.NewButton("Delete")
+	addButton := ui.NewButton("Add")
+	modifyButton := ui.NewButton("Modify")
+	deleteButton := ui.NewButton("Delete")
 
-	//var wg sync.WaitGroup
+	// Set up channel for sending data between windows
 	done := make(chan Account)
 
-	delete_button.OnClicked(func() {
-		sel := account_table.Selected()
-		cas := config.Accounts
+	// When "Delete" is clicked, remove selected account
+	deleteButton.OnClicked(func() {
+		sel := accountTable.Selected()
+		cfgAccts := config.Accounts
 
-		account_table.Lock()
-		accts := account_table.Data().(*[]DisplayAccount)
-		aa := *accts
-		fmt.Printf("Deleting %s from config...", aa[sel].Name)
-		config.Accounts = append(cas[:sel], cas[sel+1:]...)
+		// Delete the account from the config file
+		config.Accounts = append(cfgAccts[:sel], cfgAccts[sel+1:]...)
 		config.Save()
-		fmt.Printf("Deleting %s from table...", aa[sel].Name)
-		*accts = append(aa[:sel], aa[sel+1:]...)
-		account_table.Unlock()
+
+		// Delete the account from the table by building a new slice omitting it
+		accountTable.Lock()
+		tblAccts := accountTable.Data().(*[]DisplayAccount)
+		aa := *tblAccts
+		*tblAccts = append(aa[:sel], aa[sel+1:]...)
+		accountTable.Unlock()
 	})
 
-	add_button.OnClicked(func() {
+	// When "Add" is clicked, open window to enter new account info
+	addButton.OnClicked(func() {
 		//Open the edit window and wait for a result
 		editAccount(done)
 
@@ -99,41 +106,46 @@ func listAccounts() {
 		go func() {
 			acct := <-done
 
-			//Add new account to config.Accounts
+			// Add new account to config.Accounts
 			config.Accounts = append(config.Accounts, acct)
 			config.Save()
 
-			//Update the accounts list
+			// Update the accounts list
 			accounts := make([]DisplayAccount, len(config.Accounts))
 			
 			for i, account := range config.Accounts {
-				accounts[i] = DisplayAccount{false, strings.Join([]string{account.Name, account.Server}, "@")}
+				acctName := strings.Join([]string{account.Name, account.Server}, "@")
+				accounts[i] = DisplayAccount{false, acctName}
 			}	
 
-			account_table.Lock()
-			e := account_table.Data().(*[]DisplayAccount)
+			accountTable.Lock()
+			e := accountTable.Data().(*[]DisplayAccount)
 			*e = accounts
-			account_table.Unlock()
+			accountTable.Unlock()
 		}()
 	})
 
+	// Put the interface together
 	buttons := ui.NewHorizontalStack(
-		add_button,
-		modify_button,
-		delete_button)
+		addButton,
+		modifyButton,
+		deleteButton)
 
-	accounts_interface := ui.NewVerticalStack(
-		account_table,
+	accountsInterface := ui.NewVerticalStack(
+		accountTable,
 		buttons)
 
-	accounts_interface.SetStretchy(0)
+	accountsInterface.SetStretchy(0)
 
-	acct_w := ui.NewWindow("Accounts", 400, 500, accounts_interface)
-	acct_w.OnClosing(func() bool {
+	// Build/display the window
+	acctWin := ui.NewWindow("Accounts", 400, 500, accountsInterface)
+
+	acctWin.OnClosing(func() bool {
 		ui.Stop()
 		return true
 	})
-	acct_w.Show()
+
+	acctWin.Show()
 }
 
 func editAccount(done chan Account) {
@@ -147,7 +159,7 @@ func editAccount(done chan Account) {
 	password := ui.NewPasswordField()
 	password.SetText("password1234")
 
-	text_fields := ui.NewVerticalStack(
+	textFields := ui.NewVerticalStack(
 		ui.NewStandaloneLabel("Username"),
 		username,
 		ui.NewStandaloneLabel("Server"),
@@ -156,42 +168,53 @@ func editAccount(done chan Account) {
 		password)
 
 	// Assemble button stack
-	save_button := ui.NewButton("Save")
-	cancel_button := ui.NewButton("Cancel")
+	saveButton := ui.NewButton("Save")
+	cancelButton := ui.NewButton("Cancel")
 
 	buttons := ui.NewHorizontalStack(
-		save_button,
-		cancel_button)
+		saveButton,
+		cancelButton)
 
-	edit_account_interface := ui.NewVerticalStack(
-		text_fields,
+	editAccountInterface := ui.NewVerticalStack(
+		textFields,
 		buttons)
 
-	edit_account_interface.SetStretchy(0)
+	editAccountInterface.SetStretchy(0)
 
-	edit_w := ui.NewWindow("Edit Account", 400, 400, edit_account_interface)
+	// Build and display window
+	editWin := ui.NewWindow("Edit Account", 400, 400, editAccountInterface)
 
-	edit_w.OnClosing(func() bool {
-		//ui.Stop()
+/*
+	editWin.OnClosing(func() bool {
 		return true
 	})
+*/
 
 	//Save a new account
-	save_button.OnClicked(func() {
+	saveButton.OnClicked(func() {
 		//Validate the data (TODO: use the fields' methods for this)
-		if username.Text() != "" && server.Text() != "" && password.Text() != "" {
+		validUsername := regexp.MustCompile("[^\x00-\x20\x22\x26\x27\x2F\x3A\x3C\x3E\x40\x7F]+")
+//		validDomain := regexp.MustCompile("(\w{2,}\.\w{2,3}\.\w{2,3}|\w{2,}\.\w{2,3})$")
+
+		if strings.Trim(username.Text(), " ") == "" {
+			username.Invalid("You must enter a username")
+		} else if validUsername.MatchString(username.Text()) == false {
+			username.Invalid("Username contains invalid characters")
+//		} else if validDomain.MatchString(server.Text()) == false {
+//			server.Invalid("Server contains invalid characters")
+		} else {
 			//Instantiate a new account and grow config.Accounts to add it
 			acct := Account{Name: username.Text(), Server: server.Text(), Password: password.Text()}
-			edit_w.Hide()
+			editWin.Hide()
 			done <- acct
 		}
 	})
 
-	cancel_button.OnClicked(func() {
-		edit_w.Hide()
+	cancelButton.OnClicked(func() {
+		editWin.Hide()
 	})
 
-	edit_w.Show()
+	editWin.Show()
 }
 
 func main() {
