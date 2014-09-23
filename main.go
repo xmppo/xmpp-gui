@@ -3,33 +3,21 @@
 package main
 
 import (
-//	"fmt"
+	"fmt"
 	"flag"	
-        "image"	
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
+//	"sync"
 	"github.com/andlabs/ui"
 //	"github.com/agl/xmpp"
 )
-
-type areaHandler struct {
-	img		*image.RGBA
-}
-
-func (a *areaHandler) Paint(rect image.Rectangle) *image.RGBA {
-	return a.img.SubImage(rect).(*image.RGBA)
-}
 
 type DisplayAccount struct {
 	Enabled bool
 	Name    string
 }
-
-func (a *areaHandler) Mouse(me ui.MouseEvent) {}
-func (a *areaHandler) Key(ke ui.KeyEvent) bool { return false }
 
 var configFile *string = flag.String("config-file", "", "Location of the config file")
 
@@ -85,22 +73,35 @@ func listAccounts() {
 	modify_button := ui.NewButton("Modify")
 	delete_button := ui.NewButton("Delete")
 
-	var wg sync.WaitGroup
+	//var wg sync.WaitGroup
+	done := make(chan Account)
+
+	delete_button.OnClicked(func() {
+		sel := account_table.Selected()
+		cas := config.Accounts
+
+		account_table.Lock()
+		accts := account_table.Data().(*[]DisplayAccount)
+		aa := *accts
+		fmt.Printf("Deleting %s from config...", aa[sel].Name)
+		config.Accounts = append(cas[:sel], cas[sel+1:]...)
+		config.Save()
+		fmt.Printf("Deleting %s from table...", aa[sel].Name)
+		*accts = append(aa[:sel], aa[sel+1:]...)
+		account_table.Unlock()
+	})
 
 	add_button.OnClicked(func() {
-		//Create a new account
-		var acct Account
-
 		//Open the edit window and wait for a result
-		wg.Add(1)
-		go editAccount(&acct, &wg)
+		editAccount(done)
 
 		// Update accounts list concurrently once we hear back from the edit window
 		go func() {
-			wg.Wait()
+			acct := <-done
 
 			//Add new account to config.Accounts
 			config.Accounts = append(config.Accounts, acct)
+			config.Save()
 
 			//Update the accounts list
 			accounts := make([]DisplayAccount, len(config.Accounts))
@@ -135,7 +136,7 @@ func listAccounts() {
 	acct_w.Show()
 }
 
-func editAccount(acct *Account, wg *sync.WaitGroup) {
+func editAccount(done chan Account) {
 	// Assemble text fields
 	username := ui.NewTextField()
 	username.SetText("e.g. 'esnowden'")
@@ -180,19 +181,15 @@ func editAccount(acct *Account, wg *sync.WaitGroup) {
 		//Validate the data (TODO: use the fields' methods for this)
 		if username.Text() != "" && server.Text() != "" && password.Text() != "" {
 			//Instantiate a new account and grow config.Accounts to add it
-			*acct = Account{Name: username.Text(), Server: server.Text(), Password: password.Text()}
-			wg.Done()
+			acct := Account{Name: username.Text(), Server: server.Text(), Password: password.Text()}
 			edit_w.Hide()
+			done <- acct
 		}
 	})
 
 	cancel_button.OnClicked(func() {
-		wg.Done()
 		edit_w.Hide()
 	})
-
-	// Literally the whole program crashes if this isn't there
-	//fmt.Printf("Showing edit window...\n")
 
 	edit_w.Show()
 }
