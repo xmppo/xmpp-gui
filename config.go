@@ -20,17 +20,19 @@ import (
 type Config struct {
 	filename                      string `json:"-"`
 	Accounts		      []Account
+	Proxies                       []string `json:",omitempty"`
+	RawLogFile                    string   `json:",omitempty"`
 }
 
 type Account struct {
+	Enabled                       bool
 	Name                          string
+	Domain                        string   `json:",omitempty"`
 	Server                        string   `json:",omitempty"`
-	Proxies                       []string `json:",omitempty"`
 	Password                      string   `json:",omitempty"`
 	Port                          int      `json:",omitempty"`
 	PrivateKey                    []byte
 	KnownFingerprints             []KnownFingerprint
-	RawLogFile                    string   `json:",omitempty"`
 	NotifyCommand                 []string `json:",omitempty"`
 	IdleSecondsBeforeNotification int      `json:",omitempty"`
 	Bell                          bool
@@ -126,25 +128,6 @@ func (a *Account) ShouldEncryptTo(uid string) bool {
 
 /*
 func enroll(config *Config, term *terminal.Terminal) bool {
-	var err error
-	// warn(term, "Enrolling new config file")
-
-	var domain string
-	for {
-		term.SetPrompt("Account (i.e. user@example.com, enter to quit): ")
-		if config.Account, err = term.ReadLine(); err != nil || len(config.Account) == 0 {
-			return false
-		}
-
-		parts := strings.SplitN(config.Account, "@", 2)
-		if len(parts) != 2 {
-			alert(term, "invalid username (want user@domain): "+config.Account)
-			continue
-		}
-		domain = parts[1]
-		break
-	}
-
 	term.SetPrompt("Enable debug logging to /tmp/xmpp-client-debug.log? ")
 	if debugLog, err := term.ReadLine(); err != nil || debugLog != "yes" {
 		info(term, "Not enabling debug logging...")

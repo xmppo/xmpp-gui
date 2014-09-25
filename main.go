@@ -1,16 +1,9 @@
-// 30 august 2014
-
 package main
 
 import (
-//	"fmt"
-	"flag"	
-	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
-//	"sync"
 	"github.com/andlabs/ui"
 //	"github.com/agl/xmpp"
 )
@@ -18,38 +11,6 @@ import (
 type DisplayAccount struct {
 	Enabled bool
 	Name    string
-}
-
-var configFile *string = flag.String("config-file", "", "Location of the config file")
-
-func importConfig() *Config {
-	if len(*configFile) == 0 {
-		homeDir := os.Getenv("HOME")
-		if len(homeDir) == 0 {
-			// alert(term, "$HOME not set. Please either export $HOME or use the -config-file option.\n")
-			// TODO throw error
-		}
-		persistentDir := filepath.Join(homeDir, "Persistent")
-		if stat, err := os.Lstat(persistentDir); err == nil && stat.IsDir() {
-			// Looks like Tails.
-			homeDir = persistentDir
-		}
-		*configFile = filepath.Join(homeDir, ".xmpp-client-example")
-	}
-
-	config, err := ParseConfig(*configFile)
-	
-	if err != nil {
-		// alert(term, "Failed to parse config file: "+err.Error())
-		//config = new(Config)
-		// if !enroll(config, term) {
-		// 	return
-		//}
-		config.filename = *configFile
-		config.Save()
-	}
-
-	return config
 }
 
 func listAccounts() {
@@ -61,8 +22,9 @@ func listAccounts() {
 
 	// Pull accounts from config file
 	for i, account := range config.Accounts {
-		acctName := strings.Join([]string{account.Name, account.Server}, "@")
-		accounts[i] = DisplayAccount{false, acctName}
+		enabled := account.Enabled
+		acctName := strings.Join([]string{account.Name, account.Domain}, "@")
+		accounts[i] = DisplayAccount{enabled, acctName}
 	}	
 
 	// Populate table
@@ -97,10 +59,52 @@ func listAccounts() {
 		accountTable.Unlock()
 	})
 
+	// When "Modify" is clicked, present selected account for editing
+	modifyButton.OnClicked(func() {
+		sel := accountTable.Selected()
+		cfgAccts := config.Accounts
+
+		if sel < 0 {
+			return
+		}
+
+		// Retrieve selected account
+		acct := cfgAccts[sel]
+		
+		// Open window to edit selected account
+		editAccount(acct, done)
+
+		go func() {
+			// Get edited account
+			editedAcct := <- done
+
+			// Update the account
+			config.Accounts[sel] = editedAcct
+			config.Save()
+
+			// Update the accounts list
+			accounts := make([]DisplayAccount, len(config.Accounts))
+			
+			for i, account := range config.Accounts {
+				acctName := strings.Join([]string{account.Name, account.Domain}, "@")
+				accounts[i] = DisplayAccount{account.Enabled, acctName}
+			}	
+
+			// Update accountTable
+			accountTable.Lock()
+			e := accountTable.Data().(*[]DisplayAccount)
+			*e = accounts
+			accountTable.Unlock()
+		}()
+	})
+
 	// When "Add" is clicked, open window to enter new account info
 	addButton.OnClicked(func() {
-		//Open the edit window and wait for a result
-		editAccount(done)
+		// Create an empty Account to pass to editAccount
+		var account Account;
+
+		// Open the edit window and wait for a result
+		editAccount(account, done)
 
 		// Update accounts list concurrently once we hear back from the edit window
 		go func() {
@@ -114,8 +118,8 @@ func listAccounts() {
 			accounts := make([]DisplayAccount, len(config.Accounts))
 			
 			for i, account := range config.Accounts {
-				acctName := strings.Join([]string{account.Name, account.Server}, "@")
-				accounts[i] = DisplayAccount{false, acctName}
+				acctName := strings.Join([]string{account.Name, account.Domain}, "@")
+				accounts[i] = DisplayAccount{account.Enabled, acctName}
 			}	
 
 			accountTable.Lock()
@@ -148,22 +152,34 @@ func listAccounts() {
 	acctWin.Show()
 }
 
-func editAccount(done chan Account) {
-	// Assemble text fields
+func editAccount(account Account, done chan Account) {
+	// Initialize fields
+	enabled := ui.NewCheckbox("Enabled")
 	username := ui.NewTextField()
-	username.SetText("e.g. 'esnowden'")
-
-	server := ui.NewTextField()
-	server.SetText("e.g. 'ccc.de'")
-
+	domain := ui.NewTextField()
 	password := ui.NewPasswordField()
-	password.SetText("password1234")
 
+	// If this is an existing account, populate the fields from the config file
+	if len(account.Name) > 0 {
+		enabled.SetChecked(account.Enabled)
+		username.SetText(account.Name)
+		domain.SetText(account.Domain)
+		password.SetText(account.Password)		
+	} else {
+		enabled.SetChecked(false)
+		username.SetText("e.g. 'esnowden'")
+		domain.SetText("e.g. 'ccc.de'")
+		password.SetText("password1234")
+	}
+
+	// Assemble input fields
 	textFields := ui.NewVerticalStack(
+		ui.NewStandaloneLabel("Enabled"),
+		enabled,
 		ui.NewStandaloneLabel("Username"),
 		username,
-		ui.NewStandaloneLabel("Server"),
-		server,
+		ui.NewStandaloneLabel("Domain"),
+		domain,
 		ui.NewStandaloneLabel("Password"),		
 		password)
 
@@ -184,11 +200,9 @@ func editAccount(done chan Account) {
 	// Build and display window
 	editWin := ui.NewWindow("Edit Account", 400, 400, editAccountInterface)
 
-/*
 	editWin.OnClosing(func() bool {
 		return true
 	})
-*/
 
 	//Save a new account
 	saveButton.OnClicked(func() {
@@ -200,11 +214,11 @@ func editAccount(done chan Account) {
 			username.Invalid("You must enter a username")
 		} else if validUsername.MatchString(username.Text()) == false {
 			username.Invalid("Username contains invalid characters")
-//		} else if validDomain.MatchString(server.Text()) == false {
-//			server.Invalid("Server contains invalid characters")
+//		} else if validDomain.MatchString(domain.Text()) == false {
+//			domain.Invalid("Domain contains invalid characters")
 		} else {
 			//Instantiate a new account and grow config.Accounts to add it
-			acct := Account{Name: username.Text(), Server: server.Text(), Password: password.Text()}
+			acct := Account{Enabled: enabled.Checked(), Name: username.Text(), Domain: domain.Text(), Password: password.Text()}
 			editWin.Hide()
 			done <- acct
 		}
