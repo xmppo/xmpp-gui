@@ -231,6 +231,7 @@ func editAccount(account Account, done chan Account) {
 	editWin.Show()
 }
 
+/*
 func main() {
 	go ui.Do(listAccounts)
 	err := ui.Go()
@@ -238,3 +239,4 @@ func main() {
 		panic(err)
 	}
 }
+*/
