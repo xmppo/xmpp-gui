@@ -10,19 +10,19 @@ import (
 	"io"
 //	"io/ioutil"
 	"net/url"
-//	"os"
+	"os"
 //	"os/exec"
 //	"os/signal"
 //	"path/filepath"
 	"reflect"
 //	"strconv"
 	"strings"
-//	"sync"
+	"sync"
 //	"syscall"
 	"time"
 
 	"code.google.com/p/go.crypto/otr"
-//	"code.google.com/p/go.crypto/ssh/terminal"
+	"code.google.com/p/go.crypto/ssh/terminal"
 	"code.google.com/p/go.net/html"
 	"code.google.com/p/go.net/proxy"
 	"github.com/agl/xmpp"
@@ -65,6 +65,7 @@ loop:
 type Session struct {
 	account string
 	conn    *xmpp.Conn
+	term    *terminal.Terminal
 	roster  []xmpp.RosterEntry
 	// conversations maps from a JID (without the resource) to an OTR
 	// conversation. (Note that unencrypted conversations also pass through
@@ -118,7 +119,7 @@ func (s *Session) readMessages(stanzaChan chan<- xmpp.Stanza) {
 	for {
 		stanza, err := s.conn.Next()
 		if err != nil {
-			fmt.Printf("%s", err.Error())
+			fmt.Printf("%s\n", err.Error())
 			return
 		}
 		stanzaChan <- stanza
@@ -126,13 +127,18 @@ func (s *Session) readMessages(stanzaChan chan<- xmpp.Stanza) {
 }
 
 func main() {
+	term := terminal.NewTerminal(os.Stdin, "> ")
+
 	// Import the configuration
-	fmt.Printf("Importing the config...")
+	fmt.Printf("Importing the config...\n")
 	config := importConfig();
+
+	// Set up an array for all of our sessions
+	var sessions = make([]Session, len(config.Accounts))
 
 	// If no accounts are configured, open the accounts interface
 	if len(config.Accounts) < 1 {
-		fmt.Printf("Loading the accounts interface...")
+		fmt.Printf("Loading the accounts interface...\n")
 		go ui.Do(listAccounts)
 		err := ui.Go()
 		if err != nil {
@@ -141,7 +147,7 @@ func main() {
 	// Otherwise, connect
 	} else {
 		// TODO: add connections for other users 
-		fmt.Printf("Loading account 0...")
+		fmt.Printf("Loading account 0...\n")
 		account := config.Accounts[0]
 
 		user := account.Name
@@ -156,14 +162,15 @@ func main() {
 		if len(account.Server) > 0 && account.Port > 0 {
 			addr = fmt.Sprintf("%s:%d", account.Server, account.Port)
 			addrTrusted = true
+			fmt.Printf("We trust this server at: %s\n", addr)
 		} else {
 			if len(config.Proxies) > 0 {
-				fmt.Printf("Cannot connect via a proxy without Server and Port being set in the config file as an SRV lookup would leak information.")
+				fmt.Printf("Cannot connect via a proxy without Server and Port being set in the config file as an SRV lookup would leak information.\n")
 				return
 			}
 			host, port, err := xmpp.Resolve(domain)
 			if err != nil {
-				fmt.Printf("Failed to resolve XMPP server: %s", err.Error())
+				fmt.Printf("Failed to resolve XMPP server: %s\n", err.Error())
 				return
 			}
 			addr = fmt.Sprintf("%s:%d", host, port)
@@ -174,14 +181,14 @@ func main() {
 		for i := len(config.Proxies) - 1; i >= 0; i-- {
 			u, err := url.Parse(config.Proxies[i])
 			if err != nil {
-				fmt.Printf("Failed to parse "+config.Proxies[i]+" as a URL: %s", err.Error())
+				fmt.Printf("Failed to parse "+config.Proxies[i]+" as a URL: %s\n", err.Error())
 				return
 			}
 			if dialer == nil {
 				dialer = proxy.Direct
 			}
 			if dialer, err = proxy.FromURL(u, dialer); err != nil {
-				fmt.Printf("Failed to parse "+config.Proxies[i]+" as a proxy: %s", err.Error())
+				fmt.Printf("Failed to parse "+config.Proxies[i]+" as a proxy: %s\n", err.Error())
 				return
 			}
 		}
@@ -190,23 +197,23 @@ func main() {
 		if len(account.ServerCertificateSHA256) > 0 {
 			certSHA256, err := hex.DecodeString(account.ServerCertificateSHA256)
 			if err != nil {
-				fmt.Printf("Failed to parse ServerCertificateSHA256 (should be hex string): %s", err.Error())
+				fmt.Printf("Failed to parse ServerCertificateSHA256 (should be hex string): %s\n", err.Error())
 				return
 			}
 			if len(certSHA256) != 32 {
-				fmt.Printf("ServerCertificateSHA256 is not 32 bytes long")
+				fmt.Printf("ServerCertificateSHA256 is not 32 bytes long\n")
 				return
 			}
 		}
+
 		xmppConfig := &xmpp.Config{
-//			Log:                     &lineLogger{term, nil},
+			Log:                     &lineLogger{term, nil},
 //			Create:                  *createAccount,
 			TrustedAddress:          addrTrusted,
 			Archive:                 false,
 			ServerCertificateSHA256: certSHA256,
 		}
 
-/*
 		if len(config.RawLogFile) > 0 {
 			rawLog, err := os.OpenFile(config.RawLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 			if err != nil {
@@ -229,17 +236,17 @@ func main() {
 
 			xmppConfig.InLog = &in
 			xmppConfig.OutLog = &out
+			xmppConfig.Log = &out
 
 			defer in.flush()
 			defer out.flush()
 		}
-*/
 
 		if dialer != nil {
-			fmt.Printf("Making connection to %s via proxy", addr)
+			fmt.Printf("Making connection to %s via proxy\n", addr)
 			var err error
 			if xmppConfig.Conn, err = dialer.Dial("tcp", addr); err != nil {
-				fmt.Printf("Failed to connect via proxy: %s", err.Error())
+				fmt.Printf("Failed to connect via proxy: %s\n", err.Error())
 				return
 			}
 		}
@@ -251,11 +258,11 @@ func main() {
 			return
 		}
 
-		fmt.Printf("Connected, establishing session...")
+		fmt.Printf("Connected, establishing session...\n")
 		s := Session{
 			account:           strings.Join([]string{config.Accounts[0].Name, config.Accounts[0].Domain}, "@"),
 			conn:              conn,
-//			term:              term,
+			term:              term,
 			conversations:     make(map[string]*otr.Conversation),
 			knownStates:       make(map[string]string),
 			privateKey:        new(otr.PrivateKey),
@@ -266,16 +273,145 @@ func main() {
 		}
 
 		//var rosterReply chan xmpp.Stanza
-		fmt.Printf("Requesting roster...")
+		fmt.Printf("Requesting roster...\n")
 		rosterReply, _, err := s.conn.RequestRoster()
 		if err != nil {
-			fmt.Printf("Failed to request roster: %s", err.Error())
+			fmt.Printf("Failed to request roster: %s\n", err.Error())
 			return
 		}
 
-		fmt.Printf("TypeOf rosterReply: %s", reflect.TypeOf(rosterReply))
+		fmt.Printf("TypeOf rosterReply: %s\n", reflect.TypeOf(rosterReply))
 
 		conn.SignalPresence("")
 	}
 }
 
+type rawLogger struct {
+	out    io.Writer
+	prefix []byte
+	lock   *sync.Mutex
+	other  *rawLogger
+	buf    []byte
+}
+
+func (r *rawLogger) Write(data []byte) (int, error) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	if err := r.other.flush(); err != nil {
+		return 0, nil
+	}
+
+	origLen := len(data)
+	for len(data) > 0 {
+		if newLine := bytes.IndexByte(data, '\n'); newLine >= 0 {
+			r.buf = append(r.buf, data[:newLine]...)
+			data = data[newLine+1:]
+		} else {
+			r.buf = append(r.buf, data...)
+			data = nil
+		}
+	}
+
+	return origLen, nil
+}
+
+var newLine = []byte{'\n'}
+
+func (r *rawLogger) flush() error {
+	if len(r.buf) == 0 {
+		return nil
+	}
+
+	if _, err := r.out.Write(r.prefix); err != nil {
+		return err
+	}
+	if _, err := r.out.Write(r.buf); err != nil {
+		return err
+	}
+	if _, err := r.out.Write(newLine); err != nil {
+		return err
+	}
+	r.buf = r.buf[:0]
+	return nil
+}
+
+type lineLogger struct {
+	term *terminal.Terminal
+	buf  []byte
+}
+
+func (l *lineLogger) logLines(in []byte) []byte {
+	for len(in) > 0 {
+		if newLine := bytes.IndexByte(in, '\n'); newLine >= 0 {
+			info(l.term, string(in[:newLine]))
+			in = in[newLine+1:]
+		} else {
+			break
+		}
+	}
+	return in
+}
+
+func (l *lineLogger) Write(data []byte) (int, error) {
+	origLen := len(data)
+
+	if len(l.buf) == 0 {
+		data = l.logLines(data)
+	}
+
+	if len(data) > 0 {
+		l.buf = append(l.buf, data...)
+	}
+
+	l.buf = l.logLines(l.buf)
+	return origLen, nil
+}
+
+// appendTerminalEscaped acts like append(), but breaks terminal escape
+// sequences that may be in msg.
+func appendTerminalEscaped(out, msg []byte) []byte {
+	for _, c := range msg {
+		if c == 127 || (c < 32 && c != '\t') {
+			out = append(out, '?')
+		} else {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func terminalMessage(term *terminal.Terminal, color []byte, msg string, critical bool) {
+	line := make([]byte, len(msg)+16)[:0]
+
+	line = append(line, ' ')
+	line = append(line, color...)
+	line = append(line, '*')
+	line = append(line, term.Escape.Reset...)
+	line = append(line, []byte(fmt.Sprintf(" (%s) ", time.Now().Format(time.Kitchen)))...)
+	if critical {
+		line = append(line, term.Escape.Red...)
+	}
+	line = appendTerminalEscaped(line, []byte(msg))
+	if critical {
+		line = append(line, term.Escape.Reset...)
+	}
+	line = append(line, '\n')
+	term.Write(line)
+}
+
+func info(term *terminal.Terminal, msg string) {
+	terminalMessage(term, term.Escape.Blue, msg, false)
+}
+
+func warn(term *terminal.Terminal, msg string) {
+	terminalMessage(term, term.Escape.Magenta, msg, false)
+}
+
+func alert(term *terminal.Terminal, msg string) {
+	terminalMessage(term, term.Escape.Red, msg, false)
+}
+
+func critical(term *terminal.Terminal, msg string) {
+	terminalMessage(term, term.Escape.Red, msg, true)
+}
