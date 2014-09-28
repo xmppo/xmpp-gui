@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 //	"encoding/xml"
-//	"errors"
+	"errors"
 //	"flag"
 	"fmt"
 	"io"
@@ -76,7 +76,7 @@ type Session struct {
 	// notifications.
 	knownStates map[string]string
 	privateKey  *otr.PrivateKey
-	config      *Config
+	accountConfig *Account
 	// lastMessageFrom is the JID (without the resource) of the contact
 	// that we last received a message from.
 	lastMessageFrom string
@@ -127,17 +127,16 @@ func (s *Session) readMessages(stanzaChan chan<- xmpp.Stanza) {
 }
 
 func main() {
-	term := terminal.NewTerminal(os.Stdin, "> ")
-
 	// Import the configuration
 	fmt.Printf("Importing the config...\n")
-	config := importConfig();
+	config := importConfig()
+	accounts := config.Accounts
 
 	// Set up an array for all of our sessions
-	var sessions = make([]Session, len(config.Accounts))
+	// var sessions = make([]Session, len(accounts))
 
 	// If no accounts are configured, open the accounts interface
-	if len(config.Accounts) < 1 {
+	if len(accounts) < 1 {
 		fmt.Printf("Loading the accounts interface...\n")
 		go ui.Do(listAccounts)
 		err := ui.Go()
@@ -148,142 +147,159 @@ func main() {
 	} else {
 		// TODO: add connections for other users 
 		fmt.Printf("Loading account 0...\n")
-		account := config.Accounts[0]
+		account := accounts[0]
 
-		user := account.Name
-		domain := account.Domain
+		s, err := account.connect()
 
-		// TODO: encrypt/decrypt this, derp
-		password := account.Password
-
-		var addr string
-		addrTrusted := false
-
-		if len(account.Server) > 0 && account.Port > 0 {
-			addr = fmt.Sprintf("%s:%d", account.Server, account.Port)
-			addrTrusted = true
-			fmt.Printf("We trust this server at: %s\n", addr)
-		} else {
-			if len(config.Proxies) > 0 {
-				fmt.Printf("Cannot connect via a proxy without Server and Port being set in the config file as an SRV lookup would leak information.\n")
-				return
-			}
-			host, port, err := xmpp.Resolve(domain)
-			if err != nil {
-				fmt.Printf("Failed to resolve XMPP server: %s\n", err.Error())
-				return
-			}
-			addr = fmt.Sprintf("%s:%d", host, port)
+		if err == nil {
+			fmt.Printf("TypeOf s: %s\n", reflect.TypeOf(s))
 		}
-
-		fmt.Printf("Address of XMPP server: %s", addr)
-		var dialer proxy.Dialer
-		for i := len(config.Proxies) - 1; i >= 0; i-- {
-			u, err := url.Parse(config.Proxies[i])
-			if err != nil {
-				fmt.Printf("Failed to parse "+config.Proxies[i]+" as a URL: %s\n", err.Error())
-				return
-			}
-			if dialer == nil {
-				dialer = proxy.Direct
-			}
-			if dialer, err = proxy.FromURL(u, dialer); err != nil {
-				fmt.Printf("Failed to parse "+config.Proxies[i]+" as a proxy: %s\n", err.Error())
-				return
-			}
-		}
-
-		var certSHA256 []byte
-		if len(account.ServerCertificateSHA256) > 0 {
-			certSHA256, err := hex.DecodeString(account.ServerCertificateSHA256)
-			if err != nil {
-				fmt.Printf("Failed to parse ServerCertificateSHA256 (should be hex string): %s\n", err.Error())
-				return
-			}
-			if len(certSHA256) != 32 {
-				fmt.Printf("ServerCertificateSHA256 is not 32 bytes long\n")
-				return
-			}
-		}
-
-		xmppConfig := &xmpp.Config{
-			Log:                     &lineLogger{term, nil},
-//			Create:                  *createAccount,
-			TrustedAddress:          addrTrusted,
-			Archive:                 false,
-			ServerCertificateSHA256: certSHA256,
-		}
-
-		if len(config.RawLogFile) > 0 {
-			rawLog, err := os.OpenFile(config.RawLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-			if err != nil {
-				fmt.Printf("Failed to open raw log file: %s", err.Error())
-				return
-			}
-
-			lock := new(sync.Mutex)
-			in := rawLogger{
-				out:    rawLog,
-				prefix: []byte("<- "),
-				lock:   lock,
-			}
-			out := rawLogger{
-				out:    rawLog,
-				prefix: []byte("-> "),
-				lock:   lock,
-			}
-			in.other, out.other = &out, &in
-
-			xmppConfig.InLog = &in
-			xmppConfig.OutLog = &out
-			xmppConfig.Log = &out
-
-			defer in.flush()
-			defer out.flush()
-		}
-
-		if dialer != nil {
-			fmt.Printf("Making connection to %s via proxy\n", addr)
-			var err error
-			if xmppConfig.Conn, err = dialer.Dial("tcp", addr); err != nil {
-				fmt.Printf("Failed to connect via proxy: %s\n", err.Error())
-				return
-			}
-		}
-
-		fmt.Printf("Connecting %s@%s to %s", user, domain, addr)
-		conn, err := xmpp.Dial(addr, user, domain, password, xmppConfig)
-		if err != nil {
-			fmt.Printf("Failed to connect to XMPP server: %s", err.Error())
-			return
-		}
-
-		fmt.Printf("Connected, establishing session...\n")
-		s := Session{
-			account:           strings.Join([]string{config.Accounts[0].Name, config.Accounts[0].Domain}, "@"),
-			conn:              conn,
-			term:              term,
-			conversations:     make(map[string]*otr.Conversation),
-			knownStates:       make(map[string]string),
-			privateKey:        new(otr.PrivateKey),
-			config:            config,
-			pendingRosterChan: make(chan *rosterEdit),
-			pendingSubscribes: make(map[string]string),
-			lastActionTime:    time.Now(),
-		}
-
-		//var rosterReply chan xmpp.Stanza
-		fmt.Printf("Requesting roster...\n")
-		rosterReply, _, err := s.conn.RequestRoster()
-		if err != nil {
-			fmt.Printf("Failed to request roster: %s\n", err.Error())
-			return
-		}
-
-		fmt.Printf("TypeOf rosterReply: %s\n", reflect.TypeOf(rosterReply))
-
-		conn.SignalPresence("")
 	}
+
+	return
+}
+
+func (account *Account) connect() (session *Session, err error) {
+	term := terminal.NewTerminal(os.Stdin, "> ")
+	session = new(Session)
+
+	user := account.Name
+	domain := account.Domain
+
+	var e error
+
+	// TODO: encrypt/decrypt this, derp
+	password := account.Password
+
+	var addr string
+	addrTrusted := false
+
+	if len(account.Server) > 0 && account.Port > 0 {
+		addr = fmt.Sprintf("%s:%d", account.Server, account.Port)
+		addrTrusted = true
+		fmt.Printf("We trust this server at: %s\n", addr)
+	} else {
+		if len(account.Proxies) > 0 {
+			err = errors.New("Cannot connect via a proxy without Server and Port being set in the config file as an SRV lookup would leak information.\n")
+			return
+		}
+		host, port, e := xmpp.Resolve(domain)
+		if e != nil {
+			err = errors.New("Failed to resolve XMPP server: " + e.Error() + "\n")
+			return
+		}
+		addr = fmt.Sprintf("%s:%d", host, port)
+	}
+
+	fmt.Printf("Address of XMPP server: %s", addr)
+	var dialer proxy.Dialer
+	for i := len(account.Proxies) - 1; i >= 0; i-- {
+		u, e := url.Parse(account.Proxies[i])
+		if e != nil {
+			err = errors.New("Failed to parse "+account.Proxies[i]+" as a URL: " + e.Error() + "\n")
+			return
+		}
+		if dialer == nil {
+			dialer = proxy.Direct
+		}
+		if dialer, e = proxy.FromURL(u, dialer); e != nil {
+			err = errors.New("Failed to parse "+account.Proxies[i]+" as a proxy: " + e.Error() + "\n")
+			return
+		}
+	}
+
+	var certSHA256 []byte
+	if len(account.ServerCertificateSHA256) > 0 {
+		certSHA256, e := hex.DecodeString(account.ServerCertificateSHA256)
+		if e != nil {
+			err = errors.New("Failed to parse ServerCertificateSHA256 (should be hex string): %s\n" + e.Error() + "\n")
+			return
+		}
+		if len(certSHA256) != 32 {
+			err = errors.New("ServerCertificateSHA256 is not 32 bytes long\n")
+			return
+		}
+	}
+
+	xmppConfig := &xmpp.Config{
+		Log:                     &lineLogger{term, nil},
+		//			Create:                  *createAccount,
+		TrustedAddress:          addrTrusted,
+		Archive:                 false,
+		ServerCertificateSHA256: certSHA256,
+	}
+
+	if len(account.RawLogFile) > 0 {
+		rawLog, e := os.OpenFile(account.RawLogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if e != nil {
+			err = errors.New("Failed to open raw log file: " + e.Error() + "\n")
+			return
+		}
+
+		lock := new(sync.Mutex)
+		in := rawLogger{
+			out:    rawLog,
+			prefix: []byte("<- "),
+			lock:   lock,
+		}
+		out := rawLogger{
+			out:    rawLog,
+			prefix: []byte("-> "),
+			lock:   lock,
+		}
+		in.other, out.other = &out, &in
+
+		xmppConfig.InLog = &in
+		xmppConfig.OutLog = &out
+		xmppConfig.Log = &out
+
+		defer in.flush()
+		defer out.flush()
+	}
+
+	if dialer != nil {
+		fmt.Printf("Making connection to "+addr+ " via proxy\n")
+
+		if xmppConfig.Conn, e = dialer.Dial("tcp", addr); e != nil {
+			err = errors.New("Failed to connect via proxy: " + e.Error() + "\n")
+			return
+		}
+	}
+
+	fmt.Printf("Connecting %s@%s to %s", user, domain, addr)
+	conn, e := xmpp.Dial(addr, user, domain, password, xmppConfig)
+	if e != nil {
+		err = errors.New("Failed to connect to XMPP server: " + e.Error() + "\n")
+		return
+	}
+
+	fmt.Printf("Connected, establishing session...\n")
+	s := Session{
+		account:           strings.Join([]string{account.Name, account.Domain}, "@"),
+		conn:              conn,
+		term:              term,
+		conversations:     make(map[string]*otr.Conversation),
+		knownStates:       make(map[string]string),
+		privateKey:        new(otr.PrivateKey),
+		accountConfig:     account,
+		pendingRosterChan: make(chan *rosterEdit),
+		pendingSubscribes: make(map[string]string),
+		lastActionTime:    time.Now(),
+	}
+
+	//var rosterReply chan xmpp.Stanza
+	fmt.Printf("Requesting roster...\n")
+	rosterReply, _, e := s.conn.RequestRoster()
+	if e != nil {
+		err = errors.New("Failed to request roster: " + e.Error() + "\n")
+		return
+	}
+
+	fmt.Printf("TypeOf rosterReply: %s\n", reflect.TypeOf(rosterReply))
+
+	conn.SignalPresence("")
+
+	return &s, nil
 }
 
 type rawLogger struct {

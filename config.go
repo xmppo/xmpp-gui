@@ -20,8 +20,6 @@ import (
 type Config struct {
 	filename                      string `json:"-"`
 	Accounts		      []Account
-	Proxies                       []string `json:",omitempty"`
-	RawLogFile                    string   `json:",omitempty"`
 }
 
 type Account struct {
@@ -44,6 +42,8 @@ type Account struct {
 	ServerCertificateSHA256       string   `json:",omitempty"`
 	AlwaysEncrypt                 bool     `json:",omitempty"`
 	AlwaysEncryptWith             []string `json:",omitempty"`
+	Proxies                       []string `json:",omitempty"`
+	RawLogFile                    string   `json:",omitempty"`
 }
 
 type KnownFingerprint struct {
