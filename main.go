@@ -141,9 +141,6 @@ func main() {
 }
 
 func contactList() {
-	// Channel for loading data in background
-//	done := make(chan bool)
-
 	// Import the configuration
 	config := importConfig()
 	accounts := config.Accounts
@@ -156,21 +153,10 @@ func contactList() {
 
 	// Build/display the main interface window
 	contacts := make([]Contact, 1)
-
 	contactTable := ui.NewTable(reflect.TypeOf(contacts[0]))
-
-	/*
-	contactTable.Lock()
-	e := contactTable.Data().(*[]Contact)
-	*e = contacts
-	contactTable.Unlock()
-        */
-
 	contactsInterface := ui.NewVerticalStack(
 		contactTable)
-
 	contactsInterface.SetStretchy(0)
-
 	contactsWin := ui.NewWindow("Contacts", 200, 600, contactsInterface)
 
 	contactsWin.OnClosing(func() bool {
@@ -202,78 +188,61 @@ func contactList() {
 			info(s.term, fmt.Sprintf("Your fingerprint is %x", s.privateKey.Fingerprint()))
 
 			go func(){
-				for {
-					select {
-					case rosterStanza, ok := <-s.rosterReply:
-						if !ok {
-							alert(s.term, "Failed to read roster: "+err.Error())
-							return
-						}
-						if s.roster, err = xmpp.ParseRoster(rosterStanza); err != nil {
-							alert(s.term, "Failed to parse roster: "+err.Error())
-							return
-						}
+				// Wait till we get a roster back
+				rosterStanza, ok := <-s.rosterReply
 
-						contactCount = contactCount + len(s.roster)
-						// We're going to do this in listAccounts instead
-						//for _, entry := range s.roster {
-						//	fmt.Printf(entry.Jid)
-						//}
-						sessions[i] = *s
-						rosterWg.Done()
-						info(s.term, "Roster received")
-					}
+				if !ok {
+					alert(s.term, "Failed to read roster: "+err.Error())
+					return
 				}
+				if s.roster, err = xmpp.ParseRoster(rosterStanza); err != nil {
+					alert(s.term, "Failed to parse roster: "+err.Error())
+					return
+				}
+
+				// Update the total contacts count
+				contactCount = contactCount + len(s.roster)
+
+				// Add this account session to the list of sessions
+				sessions[i] = *s
+
+				// Done retrieving this roster
+				rosterWg.Done()
+				info(s.term, "Roster received")
 			}()
 		}
 	}
 
+	// Display the contact list window
+	contactsWin.Show()
+
+	// When all rosters are retrieved, add them to the contact list
 	func() {
+		// Wait till we've retrieved rosters for each enabled account
 		rosterWg.Wait()
 
-		fmt.Printf("Done getting all rosters! Adding %d contacts to list...\n", contactCount)
-
-		// Update the contact list
+		// Set up an array big enough to hold all our contacts
 		contacts = make([]Contact, contactCount)
+
 		x := 0
 
+		// For each session...
 		for _, session := range sessions {
-			fmt.Printf("Adding %d contacts for %s...\n", len(session.roster), session.account)
-
+			// Retrieve the roster...
 			for _, entry := range session.roster {
-				fmt.Printf("Adding %s...\n", entry.Jid)
+				// And add each contact to the array.
 				contacts[x].Name = entry.Jid
 				x = x + 1
 			}
 		}
 	
+		// Update the table of contacts with the contents of the rosters
 		contactTable.Lock()
 		e := contactTable.Data().(*[]Contact)
 		*e = contacts
 		contactTable.Unlock()
 	}()
-
-	contactsWin.Show()
 }
-
-/*
-func loadAccounts(sessions []Session, accounts []Account, wg *sync.WaitGroup) () {
-	// Connect to enabled accounts
-	for i, account := range accounts {
-		if account.Enabled == true {
-			fmt.Printf("Connecting to %s@%s...\n", account.Name, account.Domain)
-
-			s, err := account.connect()
-
-			if err == nil {
-				sessions[i] = *s
-			}
-		}
-	}
-
-	done <- true
-}
-*/
 
 func (account *Account) connect() (session *Session, err error) {
 	term := terminal.NewTerminal(os.Stdin, "> ")
