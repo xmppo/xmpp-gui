@@ -66,6 +66,7 @@ type Session struct {
 	account string
 	conn    *xmpp.Conn
 	term    *terminal.Terminal
+	rosterReply <-chan xmpp.Stanza
 	roster  []xmpp.RosterEntry
 	// conversations maps from a JID (without the resource) to an OTR
 	// conversation. (Note that unencrypted conversations also pass through
@@ -126,38 +127,153 @@ func (s *Session) readMessages(stanzaChan chan<- xmpp.Stanza) {
 	}
 }
 
+type Contact struct {
+	Name	string
+}
+
 func main() {
+	fmt.Printf("Loading the accounts interface...\n")
+	go ui.Do(contactList)
+	err := ui.Go()
+	if err != nil {
+		panic(err)
+	}
+}
+
+func contactList() {
+	// Channel for loading data in background
+//	done := make(chan bool)
+
 	// Import the configuration
-	fmt.Printf("Importing the config...\n")
 	config := importConfig()
 	accounts := config.Accounts
 
 	// Set up an array for all of our sessions
-	// var sessions = make([]Session, len(accounts))
+	var sessions = make([]Session, len(accounts))
 
-	// If no accounts are configured, open the accounts interface
-	if len(accounts) < 1 {
-		fmt.Printf("Loading the accounts interface...\n")
-		go ui.Do(listAccounts)
-		err := ui.Go()
-		if err != nil {
-			panic(err)
-		}
-	// Otherwise, connect
-	} else {
-		// TODO: add connections for other users 
-		fmt.Printf("Loading account 0...\n")
-		account := accounts[0]
+	// WaitGroup to update the contact list after every account's roster is retrieved
+	var rosterWg sync.WaitGroup
 
-		s, err := account.connect()
+	// Build/display the main interface window
+	contacts := make([]Contact, 1)
 
-		if err == nil {
-			fmt.Printf("TypeOf s: %s\n", reflect.TypeOf(s))
+	contactTable := ui.NewTable(reflect.TypeOf(contacts[0]))
+
+	/*
+	contactTable.Lock()
+	e := contactTable.Data().(*[]Contact)
+	*e = contacts
+	contactTable.Unlock()
+        */
+
+	contactsInterface := ui.NewVerticalStack(
+		contactTable)
+
+	contactsInterface.SetStretchy(0)
+
+	contactsWin := ui.NewWindow("Contacts", 200, 600, contactsInterface)
+
+	contactsWin.OnClosing(func() bool {
+		ui.Stop()
+		return true
+	})
+
+	// Total contact count
+	contactCount := 0
+
+	// Connect to enabled accounts and get rosters
+	for i, account := range accounts {
+		if account.Enabled == true {
+			// We'll need to update the contact list after we get a roster back
+			rosterWg.Add(1)
+
+			// Connect to the server and save a session
+			s, err := account.connect()
+			if err != nil {
+				return
+			}
+
+			// Set up a channel to retrieve xmpp data on
+			stanzaChan := make(chan xmpp.Stanza)
+			go s.readMessages(stanzaChan)
+
+			// Parse the private key associated with the session
+			s.privateKey.Parse(account.PrivateKey)
+			info(s.term, fmt.Sprintf("Your fingerprint is %x", s.privateKey.Fingerprint()))
+
+			go func(){
+				for {
+					select {
+					case rosterStanza, ok := <-s.rosterReply:
+						if !ok {
+							alert(s.term, "Failed to read roster: "+err.Error())
+							return
+						}
+						if s.roster, err = xmpp.ParseRoster(rosterStanza); err != nil {
+							alert(s.term, "Failed to parse roster: "+err.Error())
+							return
+						}
+
+						contactCount = contactCount + len(s.roster)
+						// We're going to do this in listAccounts instead
+						//for _, entry := range s.roster {
+						//	fmt.Printf(entry.Jid)
+						//}
+						sessions[i] = *s
+						rosterWg.Done()
+						info(s.term, "Roster received")
+					}
+				}
+			}()
 		}
 	}
 
-	return
+	func() {
+		rosterWg.Wait()
+
+		fmt.Printf("Done getting all rosters! Adding %d contacts to list...\n", contactCount)
+
+		// Update the contact list
+		contacts = make([]Contact, contactCount)
+		x := 0
+
+		for _, session := range sessions {
+			fmt.Printf("Adding %d contacts for %s...\n", len(session.roster), session.account)
+
+			for _, entry := range session.roster {
+				fmt.Printf("Adding %s...\n", entry.Jid)
+				contacts[x].Name = entry.Jid
+				x = x + 1
+			}
+		}
+	
+		contactTable.Lock()
+		e := contactTable.Data().(*[]Contact)
+		*e = contacts
+		contactTable.Unlock()
+	}()
+
+	contactsWin.Show()
 }
+
+/*
+func loadAccounts(sessions []Session, accounts []Account, wg *sync.WaitGroup) () {
+	// Connect to enabled accounts
+	for i, account := range accounts {
+		if account.Enabled == true {
+			fmt.Printf("Connecting to %s@%s...\n", account.Name, account.Domain)
+
+			s, err := account.connect()
+
+			if err == nil {
+				sessions[i] = *s
+			}
+		}
+	}
+
+	done <- true
+}
+*/
 
 func (account *Account) connect() (session *Session, err error) {
 	term := terminal.NewTerminal(os.Stdin, "> ")
@@ -282,20 +398,21 @@ func (account *Account) connect() (session *Session, err error) {
 		knownStates:       make(map[string]string),
 		privateKey:        new(otr.PrivateKey),
 		accountConfig:     account,
+		rosterReply:       make(<-chan xmpp.Stanza),
 		pendingRosterChan: make(chan *rosterEdit),
 		pendingSubscribes: make(map[string]string),
 		lastActionTime:    time.Now(),
 	}
 
 	//var rosterReply chan xmpp.Stanza
-	fmt.Printf("Requesting roster...\n")
+	fmt.Printf("Requesting roster for %s...\n", s.account)
 	rosterReply, _, e := s.conn.RequestRoster()
 	if e != nil {
 		err = errors.New("Failed to request roster: " + e.Error() + "\n")
 		return
 	}
 
-	fmt.Printf("TypeOf rosterReply: %s\n", reflect.TypeOf(rosterReply))
+	s.rosterReply = rosterReply
 
 	conn.SignalPresence("")
 
